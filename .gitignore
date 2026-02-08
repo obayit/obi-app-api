@@ -1,0 +1,18 @@
+*.pyc
+.vscode
+.idea
+# libre office lock files
+*.~lock*
+.prod.env
+.test.env
+.env*
+sketch.py
+random.json
+random2.json
+.odoo_lsp
+fun.cpp
+fun.out
+scratchpad*
+.history
+.ignore.*
+

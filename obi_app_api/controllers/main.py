@@ -1,0 +1,193 @@
+from odoo import models, http
+from odoo.http import request
+import odoo.models as odoo_models
+from odoo.osv import expression
+
+
+class Main(http.Controller):
+
+    @http.route([
+        '/obi_dashboard/shop',
+        '/obi_dashboard/shop/page/<int:page>',
+        '/obi_dashboard/shop/category/<model("product.public.category"):category>',
+        '/obi_dashboard/shop/category/<model("product.public.category"):category>/page/<int:page>',
+    ], auth='public', type='json')
+    def shop(self, *args, **kwargs):
+        # ===== Original Intention ======
+        # this endpoint is intended for a mobile app
+        # the mobile app should display the same data that is show in the website's /shop route
+        # I want to achieve this by calling the same original method that handles /shop route,
+        # but instead of rendering a html, just return a dictionary object with all variables that are available to the qweb renderer
+        # this should include variables defined inside the qweb template with <t t-set="" t-value=""/>
+        # so make a function that will use original odoo code as much as possible, but just before returning an html code, return a dictionary
+        
+        # real implementation, we can get the dictionary provided for the qweb view as context (this values here => `request.render("website_sale.products", values)`)
+        # but values set inside the qweb with t-set, its better to replicate the code here
+        # also t-if
+        # making a renderer that will output an updated values dictionary instead of html is not practical, right?
+
+        # Capture the context passed to the final render call of the original /shop controller
+        print('#args');
+        print(args);
+        print('#kwargs');
+        print(kwargs);
+        orig_render = request.render
+        try:
+            def _capture_render(template, qcontext=None, *a, **kw):
+                return qcontext or {}
+
+            request.render = _capture_render
+            # Import and call original WebsiteSale.shop implementation (unwrapped)
+            from odoo.addons.website_sale.controllers.main import WebsiteSale as WebsiteSaleController
+            # Call the original function behind the http.route decorator to avoid its wrapper
+            shop_func = getattr(WebsiteSaleController, 'shop')
+            # Use __wrapped__ to access the underlying function body (bypass route wrapper)
+            if hasattr(shop_func, '__wrapped__'):
+                result = shop_func.__wrapped__(WebsiteSaleController(), *args, **kwargs)
+            else:
+                result = WebsiteSaleController().shop(*args, **kwargs)
+        finally:
+            request.render = orig_render
+
+        category = result.get('category')
+        entries = None  # entries are categories, just named it like how the qweb template names it
+        search = result.get('search')
+        search_categories_ids = result.get('search_categories_ids')
+        if category:
+            entries = not search and category.child_id or category.child_id.filtered(lambda c: category.id in search_categories_ids)
+
+        if not entries:
+            parent = category.parent_id
+            entries = not search and parent.child_id or parent.child_id.filtered(lambda c: parent.id in search_categories_ids)
+        else:
+            # populate needed data
+            result['categories'] = result['categories'].web_read({
+                'id': {},
+                'display_name': {},
+            })
+        return result
+
+    @http.route([
+        '/obi_app/products/home',
+        '/obi_app/products/home/category/<model("product.public.category"):category>',
+        '/obi_app/products/home/page/<int:page>',
+        '/obi_app/products/home/category/<model("product.public.category"):category>/page/<int:page>',
+    ], auth='public', type='json')
+    def products_home(self, category=None, page=1, **kwargs):
+        """
+        Returns product home data suitable for mobile app including:
+        - pricelist: current active pricelist
+        - category: current category info
+        - categories: list of categories available
+        - products: paginated list of products
+        - pagination: pagination info (current page, total pages, page size, total count)
+        """
+        
+        # Get current pricelist
+        website = request.env['website'].get_current_website()
+        products_per_page = website.shop_ppg or 20
+        pricelist = website.pricelist_id
+        pricelist_data = {
+            'id': pricelist.id,
+            'display_name': pricelist.name,
+            'currency_id': pricelist.currency_id.id,
+            'currency_name': pricelist.currency_id.name,
+        } if pricelist else False
+        
+        # Get categories - either subcategories of current category or root categories
+        category_obj = request.env['product.public.category']
+        if category:
+            # Get subcategories of the current category
+            categories = category_obj.search([('parent_id', '=', category.id)])
+            current_category = {
+                'id': category.id,
+                'name': category.name,
+                'parent_id': category.parent_id.id if category.parent_id else False,
+            }
+        else:
+            # Get root categories
+            categories = category_obj.search([('parent_id', '=', False)])
+            current_category = False
+        
+        # Format categories data using web_read
+        categories_data = categories.web_read({
+            'id': {},
+            'display_name': {},
+            'name': {},
+            'parent_id': {},
+            # 'product_template_ids': {'id': {}},
+        })
+        
+        # Get products with pagination
+        product_template_obj = request.env['product.template']
+
+        website_domain = website.website_domain()
+        domain = expression.AND([
+            [
+                ('is_published', '=', True),
+                ('sale_ok', '=', True),
+            ],
+            website_domain
+        ])
+
+        # Filter by category if provided
+        if category:
+            domain.append(('public_categ_ids', 'child_of', category.id))
+        
+        # Search products
+        total_products = product_template_obj.search_count(domain)
+        products = product_template_obj.search(
+            domain,
+            offset=(page - 1) * products_per_page,
+            limit=products_per_page,
+            # order='display_name'
+        )
+        
+        # Format products data using web_read
+        products_data = products.web_read({
+            'id': {},
+            'display_name': {},
+            'name': {},
+            'description': {},
+            'list_price': {},
+            'categ_id': {
+                'id': {},
+                # 'display_name': {},
+            },
+            'public_categ_ids': {
+                'id': {},
+            },
+        })
+        # Add computed fields
+        currency_id = pricelist.currency_id.id if pricelist else website.currency_id.id
+        fiscal_position_sudo = website.fiscal_position_id.sudo()
+        products_prices = products._get_sales_prices(pricelist, fiscal_position_sudo)
+        # for prod_data in products_data:
+            # prod_data['currency_id'] = currency_id
+            # prod_data['image_url'] = f"/web/image/product.template/{prod_data['id']}/image_1024"
+            # Replace categ_id array with single id
+            # categ_id = prod_data.get('categ_id', False)
+            # prod_data['categ_id'] = categ_id[0] if categ_id else False
+            # Replace public_categ_ids array with list of ids
+            # prod_data['public_categ_ids'] = [cat['id'] for cat in prod_data.get('public_categ_ids', [])]
+        
+        # Calculate pagination info
+        total_pages = (total_products + products_per_page - 1) // products_per_page
+        pagination = {
+            'current_page': page,
+            'total_pages': total_pages,
+            'page_size': products_per_page,
+            'total_count': total_products,
+            'has_next': page < total_pages,
+            'has_prev': page > 1,
+        }
+        
+        return {
+            'pricelist': pricelist_data,
+            'category': current_category,
+            'categories': categories_data,
+            'products': products_data,
+            'pagination': pagination,
+            'products_prices': products_prices,
+            # 'currency_id': currency_data,
+        }

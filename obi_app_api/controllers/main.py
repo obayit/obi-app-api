@@ -27,10 +27,6 @@ class Main(http.Controller):
         # making a renderer that will output an updated values dictionary instead of html is not practical, right?
 
         # Capture the context passed to the final render call of the original /shop controller
-        print('#args');
-        print(args);
-        print('#kwargs');
-        print(kwargs);
         orig_render = request.render
         try:
             def _capture_render(template, qcontext=None, *a, **kw):
@@ -69,11 +65,8 @@ class Main(http.Controller):
 
     @http.route([
         '/obi_app/products/home',
-        '/obi_app/products/home/category/<model("product.public.category"):category>',
-        '/obi_app/products/home/page/<int:page>',
-        '/obi_app/products/home/category/<model("product.public.category"):category>/page/<int:page>',
     ], auth='public', type='json')
-    def products_home(self, category=None, page=1, **kwargs):
+    def products_home(self, *args, **kwargs):
         """
         Returns product home data suitable for mobile app including:
         - pricelist: current active pricelist
@@ -82,6 +75,12 @@ class Main(http.Controller):
         - products: paginated list of products
         - pagination: pagination info (current page, total pages, page size, total count)
         """
+        category_obj = request.env['product.public.category']
+        search = kwargs.get('search')
+        category = int(kwargs.get('categoryId', 0))
+        if category:
+            category = category_obj.search([('id', '=', category)])
+        page = int(kwargs.get('page', 1))
         
         # Get current pricelist
         website = request.env['website'].get_current_website()
@@ -95,7 +94,6 @@ class Main(http.Controller):
         } if pricelist else False
         
         # Get categories - either subcategories of current category or root categories
-        category_obj = request.env['product.public.category']
         if category:
             # Get subcategories of the current category
             categories = category_obj.search([('parent_id', '=', category.id)])
@@ -132,7 +130,20 @@ class Main(http.Controller):
 
         # Filter by category if provided
         if category:
-            domain.append(('public_categ_ids', 'child_of', category.id))
+            domain = expression.AND([
+                [
+                    ('public_categ_ids', 'child_of', category.id),
+                ],
+                domain
+            ])
+
+        if search:
+            domain = expression.AND([
+                [
+                    ('name', 'ilike', f'%{search}%'),
+                ],
+                domain
+            ])
         
         # Search products
         total_products = product_template_obj.search_count(domain)
@@ -159,17 +170,15 @@ class Main(http.Controller):
             },
         })
         # Add computed fields
-        currency_id = pricelist.currency_id.id if pricelist else website.currency_id.id
         fiscal_position_sudo = website.fiscal_position_id.sudo()
         products_prices = products._get_sales_prices(pricelist, fiscal_position_sudo)
-        # for prod_data in products_data:
-            # prod_data['currency_id'] = currency_id
-            # prod_data['image_url'] = f"/web/image/product.template/{prod_data['id']}/image_1024"
-            # Replace categ_id array with single id
-            # categ_id = prod_data.get('categ_id', False)
-            # prod_data['categ_id'] = categ_id[0] if categ_id else False
-            # Replace public_categ_ids array with list of ids
-            # prod_data['public_categ_ids'] = [cat['id'] for cat in prod_data.get('public_categ_ids', [])]
+        currency_id = pricelist.currency_id if pricelist else website.currency_id
+        currency_data = currency_id.web_read({
+            'id': {},
+            'name': {},
+            'symbol': {},
+            'position': {},
+        }) if currency_id else []
         
         # Calculate pagination info
         total_pages = (total_products + products_per_page - 1) // products_per_page
@@ -189,5 +198,60 @@ class Main(http.Controller):
             'products': products_data,
             'pagination': pagination,
             'products_prices': products_prices,
-            # 'currency_id': currency_data,
+            'currency_data': len(currency_data) and currency_data[0],
+        }
+
+    @http.route([
+        '/obi_app/profile',
+    ], auth='public', type='json')
+    def get_profile(self, *args, **kwargs):
+        res = {
+        }
+        user = request.env.user
+        if user:
+            res.update({
+                'user_id': user.id,
+                'name': user.name,
+                'email': user.email,
+                'phone': user.partner_id.phone,
+                'address': {
+                    'city': user.partner_id.city,
+                    'street': user.partner_id.street,
+                    'street2': user.partner_id.street2,
+                    'zip': user.partner_id.zip,
+                    'state': {
+                        'id': user.partner_id.state_id.id,
+                        'name': user.partner_id.state_id.name,
+                    },
+                    'country': {
+                        'id': user.partner_id.country_id.id,
+                        'name': user.partner_id.country_id.name,
+                    },
+                },
+            })
+        return res
+    
+    @http.route([
+        '/obi_app/profile/edit',
+    ], auth='user', type='json')
+    def update_profile(self, *args, **kwargs):
+        valid_keys = [
+            'name',
+            'email',
+            'phone',
+            'city',
+            'zip',
+            'state_id',
+            'country_id',
+        ]
+
+        values = {}
+        for key in valid_keys:
+            value = kwargs.get(key)
+            if value:
+                values[key] = value
+        partner = request.env.user.partner_id
+        partner.sudo().write(values)
+        return {
+            'is_success': True,
         }

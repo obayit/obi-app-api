@@ -255,3 +255,31 @@ class Main(http.Controller):
         return {
             'is_success': True,
         }
+
+    @http.route([
+        '/obi_app/profile/edit/data',
+    ], auth='public', type='json')
+    def update_profile_data(self, *args, **kwargs):
+        countries = request.env['res.country'].sudo().search([]).web_read({
+            'id': {},
+            'name': {},
+            'code': {},
+            'phone_code': {},
+        })
+        try:
+            selected_country_id = int(kwargs.get('countryId', 0))
+        except Exception:
+            selected_country_id = 0
+        states = []
+        if not selected_country_id:
+            selected_country_id = request.env.user.partner_id.country_id.id
+
+        if selected_country_id:
+            states = request.env['res.country.state'].sudo().search([('country_id', '=', selected_country_id)]).web_read({
+                'id': {},
+                'name': {},
+            })
+        return {
+            'states': states,
+            'countries': countries,
+        }

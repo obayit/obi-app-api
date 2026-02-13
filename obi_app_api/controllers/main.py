@@ -1,8 +1,15 @@
+from pprint import pprint
 from odoo import models, http
 from odoo.http import request
 import odoo.models as odoo_models
 from odoo.osv import expression
 
+currencySpec = {
+    'id': {},
+    'name': {},
+    'symbol': {},
+    'position': {},
+}
 
 class Main(http.Controller):
 
@@ -65,7 +72,7 @@ class Main(http.Controller):
 
     @http.route([
         '/obi_app/products/home',
-    ], auth='public', type='json')
+    ], auth='public', type='json', website=True, sitemap=False)
     def products_home(self, *args, **kwargs):
         """
         Returns product home data suitable for mobile app including:
@@ -173,12 +180,7 @@ class Main(http.Controller):
         fiscal_position_sudo = website.fiscal_position_id.sudo()
         products_prices = products._get_sales_prices(pricelist, fiscal_position_sudo)
         currency_id = pricelist.currency_id if pricelist else website.currency_id
-        currency_data = currency_id.web_read({
-            'id': {},
-            'name': {},
-            'symbol': {},
-            'position': {},
-        }) if currency_id else []
+        currency_data = currency_id.web_read(currencySpec) if currency_id else []
         
         # Calculate pagination info
         total_pages = (total_products + products_per_page - 1) // products_per_page
@@ -282,4 +284,116 @@ class Main(http.Controller):
         return {
             'states': states,
             'countries': countries,
+        }
+
+    @http.route([
+        '/obi_app/cart',
+    ], auth='public', type='json', website=True, sitemap=False)
+    def get_cart(self, *args, **kwargs):
+        website = request.website
+        from odoo.addons.website_sale.controllers.main import WebsiteSale as WebsiteSaleController
+        result = WebsiteSaleController().cart(*args, **kwargs)
+        order_id = result.qcontext['website_sale_order']
+        # order_data = order_id.web_read({
+        #     'website_order_line': {
+        #         'fields': {
+        #             'linked_line_id': {},
+        #             'product_id': {},
+        #             'name_short': {},
+        #         }
+        #     }
+        # })
+        # order_data = order_data[0]
+        # qty_data = {}
+        # for line in order_id.website_order_line:
+        #     qty_data[line.id] = line._get_displayed_quantity()
+        # for data_line in order_data['website_order_line']:
+        #     data_line['displayed_quantity'] = qty_data[data_line['id']]
+        # result.qcontext['website_sale_order'] = order_data
+
+        res_order = {}
+        if order_id:
+            res_order = {
+                'website_order_line': [],
+                'amount_untaxed': order_id.amount_untaxed,
+                'amount_tax': order_id.amount_tax,
+                'amount_total': order_id.amount_total,
+            }
+            for line in order_id.website_order_line:
+                product_price = 0
+                if website.show_line_subtotals_tax_selection == 'tax_excluded':
+                    product_price = line.price_subtotal
+                else:
+                    product_price = line.price_total
+                res_order['website_order_line'].append({
+                    'linked_line_id': line.linked_line_id,
+                    'product_id': line.product_id.id,
+                    'name_short': line.name_short,
+                    'displayed_quantity': line._get_displayed_quantity(),
+                    'product_price': product_price,
+                })
+        result.qcontext['website_sale_order'] = res_order
+
+        currency = result.qcontext['currency']
+        result.qcontext['currency'] = {
+            'id': currency.id,
+            'name': currency.name,
+            'symbol': currency.symbol,
+            'position': currency.position,
+        }
+
+        return {
+            'cart_data': result.qcontext,
+        }
+
+    @http.route([
+        '/shop/cart/skip_payment',
+    ], auth='public', type='json', website=True, sitemap=False)
+    def skip_payment(self, *args, **kwargs):
+        order = request.website.sale_get_order()
+        if order:
+            order.action_confirm()
+        return {
+            'order_id': order and order.id,
+        }
+
+    @http.route([
+        '/obi_app/orders',
+    ], auth='public', type='json', website=True, sitemap=False)
+    def get_orders(self, *args, **kwargs):
+        from odoo.addons.sale.controllers.portal import CustomerPortal as CustomerPortalController
+        result = CustomerPortalController().portal_my_orders(*args, **kwargs)
+        orders_data = result.qcontext['orders'].web_read({
+            'name': {},
+            'date_order': {},
+            'locked': {},
+            'amount_total': {},
+            'currency_id': {
+                'fields': currencySpec,
+            },
+        })
+        result.qcontext['orders'] = orders_data
+        return {
+            'orders_data': result.qcontext,
+        }
+
+    @http.route([
+        '/obi_app/single_order',
+    ], auth='public', type='json', website=True, sitemap=False)
+    def get_single_order(self, *args, **kwargs):
+        from odoo.addons.sale.controllers.portal import CustomerPortal as CustomerPortalController
+        result = CustomerPortalController().portal_order_page(*args, **kwargs)
+        order_id = result.qcontext['sale_order']
+        res_order = {
+            # 'website_order_line': [],
+            'name': order_id.name,
+            'date_order': order_id.date_order,
+            'amount_untaxed': order_id.amount_untaxed,
+            'amount_tax': order_id.amount_tax,
+            'amount_total': order_id.amount_total,
+            # 'currency_id': {}
+        }
+        result.qcontext['sale_order'] = res_order
+        return {
+            'order_data': result.qcontext,
         }

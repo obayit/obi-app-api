@@ -21,6 +21,7 @@
         'base',
         'product',
         'website',
+        'sale',
     ],
 
     # always loaded

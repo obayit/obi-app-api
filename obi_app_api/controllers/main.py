@@ -108,6 +108,11 @@ class Main(http.Controller):
                 'id': category.id,
                 'name': category.name,
                 'parent_id': category.parent_id.id if category.parent_id else False,
+                'parents_and_self': category.parents_and_self.web_read({
+                    'id': {},
+                    'name': {},
+                    'parent_id': {},
+                }),
             }
         else:
             # Get root categories

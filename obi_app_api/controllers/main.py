@@ -388,17 +388,199 @@ class Main(http.Controller):
     def get_single_order(self, *args, **kwargs):
         from odoo.addons.sale.controllers.portal import CustomerPortal as CustomerPortalController
         result = CustomerPortalController().portal_order_page(*args, **kwargs)
-        order_id = result.qcontext['sale_order']
-        res_order = {
-            # 'website_order_line': [],
-            'name': order_id.name,
-            'date_order': order_id.date_order,
-            'amount_untaxed': order_id.amount_untaxed,
-            'amount_tax': order_id.amount_tax,
-            'amount_total': order_id.amount_total,
-            # 'currency_id': {}
+        sale_order = result.qcontext['sale_order']
+        order_data = {}
+        if sale_order:
+            order_data.update(sale_order.web_read({
+                'name': {},
+                'date_order': {},
+                'amount_untaxed': {},
+                'amount_tax': {},
+                'amount_total': {},
+                'currency_id': {
+                    'fields': currencySpec,
+                },
+            })[0])
+        result.qcontext['sale_order'] = order_data
+
+
+        lines_to_report = sale_order._get_order_lines_to_report()
+
+        # populate: order lines
+        current_subtotal = 0
+        lines = []
+        for index, line in enumerate(lines_to_report):
+            current_subtotal = current_subtotal + line.price_subtotal
+            line_data = {
+                'id': line.id,
+                'product_id': line.product_id.id,
+                'product_idxxx': line.product_id,
+
+                'product_name': line.name,
+                'display_type': line.display_type,
+                'product_uom_qty': line.product_uom_qty,
+                'product_uom': {
+                    'id': line.product_uom.id,
+                    'name': line.product_uom.name,
+                },
+                'discount': line.discount,
+                'price_unit': line.price_unit,
+                'discount_amount': (1-line.discount / 100.0) * line.price_unit,
+                'is_display_discount': True in [line.discount > 0 for line in sale_order.order_line],
+                'taxes': ', '.join(map(lambda x: (x.description or x.name), line.tax_id)),
+                'is_downpayment': line.is_downpayment,
+                'subtotal': line.price_subtotal,
+            }
+            current_section = None
+            if line.display_type == 'line_section':
+                # does section resets subtotal? see this in og template output
+                current_section = line
+                current_subtotal = 0
+            line_last = index == len(lines_to_report) - 1
+            line_data['is_display_subtotal'] = current_section and (line_last or lines_to_report[index+1].display_type == 'line_section') and not line.is_downpayment
+            line_data['current_subtotal'] = current_subtotal
+            lines.append(line_data)
+        
+            is_same_invoice_and_shipping = sale_order.partner_shipping_id == sale_order.partner_invoice_id
+            customer_info = {
+                'is_same_invoice_and_shipping': is_same_invoice_and_shipping,
+            }
+            # <small t-if="sale_order.partner_id == sale_order.partner_invoice_id == sale_order.env.user.partner_id">
+            billing_address_data = extract_contact_widget_data(sale_order.partner_invoice_id)
+            customer_info['partner_invoice_id'] = billing_address_data
+            if not is_same_invoice_and_shipping:
+                customer_info['partner_shipping_id'] = extract_contact_widget_data(sale_order.partner_shipping_id)
+            else:
+                customer_info['partner_shipping_id'] = billing_address_data
+            invoices = sale_order.invoice_ids.filtered(lambda i: i.state not in ['draft', 'cancel']).sorted('date', reverse=True)[:3]
+            # customer_info['invoices']
+            is_show_invoices = invoices and sale_order.state in ['sale', 'cancel']
+            invoices_data = []
+            if is_show_invoices:
+                for i in invoices:
+                    payment_state_text = ''
+                    is_authorized_tx_ids = bool(i.authorized_transaction_ids)
+                    if i.payment_state in ('paid', 'in_payment'):
+                        payment_state_text = 'Paid'
+                    elif i.payment_state == 'reversed':
+                        payment_state_text = 'Reversed'
+                    elif is_authorized_tx_ids:
+                        payment_state_text = 'Authorized'
+                    else:
+                        payment_state_text = 'Waiting Payment'
+
+                    invoices_data.append({
+                        'id': i.id,
+                        'name': i.name,
+                        'payment_state_text': payment_state_text,
+                        'invoice_date': i.invoice_date,
+                    })
+        
+        delivery_orders = sale_order.picking_ids.filtered(
+            lambda picking: picking.picking_type_id.code == 'outgoing'
+        ).sorted('date', reverse=True)[:3]
+
+        returns = sale_order.picking_ids.filtered(
+            lambda picking: picking.picking_type_id.code == 'incoming'
+        )
+
+        def keep_query():
+            # should this return a http query params that will be used by pdf reports? ? ?
+            return ''
+
+        shipping_data = {
+            "delivery_orders": [
+                {
+                    "id": picking.id,
+                    "name": picking.name,
+                    "report_url": f"/my/picking/pdf/{picking.id}?{keep_query()}",
+                    "return_url": f"/my/picking/return/pdf/{picking.id}?{keep_query()}" if picking.state == "done" else None,
+                    "state": picking.state,
+                    "status_label": (
+                        "Shipped" if picking.state == "done"
+                        else "Cancelled" if picking.state == "cancel"
+                        else "Preparation" if picking.state in ["draft", "waiting", "confirmed", "assigned"]
+                        else None
+                    ),
+                    # "status_label": 'Shipped',
+                    "status_type": (
+                        "success" if picking.state == "done"
+                        else "danger" if picking.state == "cancel"
+                        else "info" if picking.state in ["draft", "waiting", "confirmed", "assigned"]
+                        else None
+                    ),
+                    # "status_type": 'success',
+                    "date_done": picking.date_done,
+                    "is_show_scheduled_date": picking.state in ['draft', 'waiting', 'confirmed', 'assigned'],
+                    "scheduled_date": picking.scheduled_date,
+                }
+                for picking in delivery_orders
+            ],
+            "returns": [
+                {
+                    "id": picking.id,
+                    "name": picking.name,
+                    "report_url": f"/my/picking/pdf/{picking.id}?{keep_query()}",
+                    "state": picking.state,
+                    "status_label": (
+                        "Received" if picking.state == "done"
+                        else "Cancelled" if picking.state == "cancel"
+                        else "Awaiting arrival" if picking.state in ["draft", "waiting", "confirmed", "assigned"]
+                        else None
+                    ),
+                    "status_type": (
+                        "success" if picking.state == "done"
+                        else "danger" if picking.state == "cancel"
+                        else "info" if picking.state in ["draft", "waiting", "confirmed", "assigned"]
+                        else None
+                    ),
+                    "date_done": picking.date_done,
+                    '': picking.state in ['draft', 'waiting', 'confirmed', 'assigned'],
+                    "scheduled_date": picking.scheduled_date,
+                }
+                for picking in returns
+            ]
         }
-        result.qcontext['sale_order'] = res_order
+
+
+        result.qcontext['sale_order']['lines'] = lines
+        result.qcontext['invoices'] = invoices_data
+        result.qcontext['customer_info'] = customer_info
+        result.qcontext['shipping_data'] = shipping_data
         return {
             'order_data': result.qcontext,
         }
+
+def extract_contact_widget_data(partner):
+    """
+    Extracts contact info from a res.partner record for use in a React Native ContactWidget.
+    :param partner: res.partner record (browse record)
+    :return: dict with contact fields
+    """
+    return {
+        "name": partner.name,
+        "address": partner.street,
+        "city": partner.city,
+        "country": partner.country_id.name if partner.country_id else "",
+        "phone": partner.phone,
+        "mobile": partner.mobile,
+        "website": partner.website,
+        "email": partner.email,
+        "vat": partner.vat,
+        "vatLabel": partner.env['ir.model.fields']._get('res.partner', 'vat').field_description if partner.vat else "VAT",
+        "fields": [
+            field for field in [
+                "address" if partner.street else None,
+                "city" if partner.city else None,
+                "phone" if partner.phone else None,
+                "mobile" if partner.mobile else None,
+                "website" if partner.website else None,
+                "email" if partner.email else None,
+                "vat" if partner.vat else None,
+            ] if field
+        ],
+        "options": {
+            "no_marker": False,
+            "phone_icons": True,
+        }
+    }

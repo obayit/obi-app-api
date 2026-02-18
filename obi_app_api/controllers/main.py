@@ -209,8 +209,75 @@ class Main(http.Controller):
         }
 
     @http.route([
+        '/obi_app/shop',
+    ], auth='public', type='json', website=True, sitemap=False)
+    def app_shop(self, *args, **kwargs):
+        from odoo.addons.website_sale.controllers.main import WebsiteSale as WebsiteSaleController
+        result = WebsiteSaleController().shop(*args, **kwargs)
+
+        categories = result.qcontext['categories']
+        category = result.qcontext['category']
+        current_category = {}
+        if category:
+            # do we still need this?
+            categories = request.env['product.public.category'].search([('parent_id', '=', category.id)])
+            current_category = {
+                'id': category.id,
+                'name': category.name,
+                'parent_id': category.parent_id.id if category.parent_id else False,
+                'parents_and_self': category.parents_and_self.web_read({
+                    'id': {},
+                    'name': {},
+                    'parent_id': {},
+                }),
+            }
+        categories_data = categories.web_read({
+            'id': {},
+            'display_name': {},
+            'name': {},
+            'parent_id': {},
+            # 'product_template_ids': {'id': {}},
+        })
+        website = request.env['website'].get_current_website()
+        pricelist = result.qcontext['pricelist']
+        currency_id = pricelist.currency_id if pricelist else website.currency_id
+        currency_data = currency_id.web_read(currencySpec) if currency_id else []
+        pricelist_data = {
+            'id': pricelist.id,
+            'display_name': pricelist.name,
+            'currency_id': pricelist.currency_id.id,
+            'currency_name': pricelist.currency_id.name,
+        } if pricelist else False
+
+        bins = result.qcontext.pop('bins', None)  # bins is lazy method, pop it to prevent unnecessary computation
+        products = result.qcontext['products']
+        products_data = products.web_read({
+            'id': {},
+            'display_name': {},
+            'name': {},
+            'description': {},
+            'list_price': {},
+            'categ_id': {
+                'id': {},
+                # 'display_name': {},
+            },
+            'public_categ_ids': {
+                'id': {},
+            },
+        })
+        # Add computed fields
+
+        result.qcontext['categories'] = categories_data
+        result.qcontext['category'] = current_category
+        result.qcontext['currency_data'] = len(currency_data) and currency_data[0]
+        result.qcontext['pricelist'] = pricelist_data
+        result.qcontext['products'] = products_data
+
+        return result.qcontext
+
+    @http.route([
         '/obi_app/profile',
-    ], auth='public', type='json')
+    ], auth='user', type='json')
     def get_profile(self, *args, **kwargs):
         res = {
         }
@@ -542,6 +609,17 @@ class Main(http.Controller):
             ]
         }
 
+        terms_data = {
+            # WIP
+            'is_terms_html': sale_order.terms_type == 'html',
+            'terms_link': '',
+                #     <t t-set="tc_url" t-value="'%s/terms' % (sale_order.get_base_url())"/>
+                #     <em>Terms &amp; Conditions: <a href="/terms"><t t-out="tc_url"/></a></em>
+                # </t>
+                # <t t-else="">
+                #     <em t-field="sale_order.note"/>
+                # </t>
+        }
 
         result.qcontext['sale_order']['lines'] = lines
         result.qcontext['invoices'] = invoices_data

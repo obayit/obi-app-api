@@ -398,6 +398,7 @@ class Main(http.Controller):
                 else:
                     product_price = line.price_total
                 res_order['website_order_line'].append({
+                    'id': line.id,
                     'linked_line_id': line.linked_line_id,
                     'product_id': line.product_id.id,
                     'name_short': line.name_short,
